@@ -191,7 +191,6 @@ void BraveImporter::ParseBookmarks(
                                bookmark_order_dict,
                                bookmarks);
 
-  path.clear();
   RecursiveReadBookmarksFolder(base::UTF8ToUTF16("Other Bookmarks"),
                                "-1",
                                path,
@@ -205,14 +204,13 @@ void BraveImporter::ParseBookmarks(
 void BraveImporter::RecursiveReadBookmarksFolder(
   const base::string16 name,
   const std::string key,
-  std::vector<base::string16>& parent_path,
+  std::vector<base::string16> path,
   const bool in_toolbar,
   base::Value* bookmark_folders_dict,
   base::Value* bookmarks_dict,
   base::Value* bookmark_order_dict,
   std::vector<ImportedBookmarkEntry>* bookmarks) {
   // Add the name of the current folder to the path
-  std::vector<base::string16> path = parent_path;
   path.push_back(name);
 
   base::Value* bookmark_order =

@@ -38,7 +38,7 @@ class BraveImporter : public Importer {
   void RecursiveReadBookmarksFolder(
     const base::string16 name,
     const std::string key,
-    std::vector<base::string16>& parent_path,
+    std::vector<base::string16> path,
     const bool in_toolbar,
     base::Value* bookmark_folders_dict,
     base::Value* bookmarks_dict,
