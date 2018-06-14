@@ -2,34 +2,28 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "brave/utility/importer/chrome_importer.h"
+#include "brave/utility/importer/brave_importer.h"
 
 #include <memory>
-#include <string>
+#include <vector>
 
 #include "base/files/file_util.h"
 #include "base/json/json_reader.h"
-#include "base/macros.h"
-#include "base/memory/ref_counted.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
-#include "brave/utility/importer/brave_external_process_importer_bridge.h"
-#include "build/build_config.h"
-#include "chrome/common/importer/imported_bookmark_entry.h"
 #include "chrome/common/importer/importer_bridge.h"
-#include "chrome/common/importer/importer_url_row.h"
-#include "chrome/utility/importer/favicon_reencode.h"
 #include "components/autofill/core/common/password_form.h"
-#include "components/os_crypt/os_crypt.h"
 #include "components/cookie_config/cookie_store_util.h"
-#include "net/extras/sqlite/cookie_crypto_delegate.h"
+#include "components/os_crypt/os_crypt.h"
 #include "components/password_manager/core/browser/login_database.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
 #include "components/prefs/json_pref_store.h"
 #include "components/prefs/pref_filter.h"
 #include "net/cookies/canonical_cookie.h"
 #include "net/cookies/cookie_constants.h"
+#include "net/extras/sqlite/cookie_crypto_delegate.h"
 #include "net/extras/sqlite/sqlite_persistent_cookie_store.h"
 #include "sql/connection.h"
 #include "sql/statement.h"
@@ -47,7 +41,7 @@
 #include "chrome/browser/password_manager/password_store_x.h"
 #include "components/os_crypt/key_storage_util_linux.h"
 
-base::nix::DesktopEnvironment ChromeImporter::GetDesktopEnvironment() {
+base::nix::DesktopEnvironment BraveImporter::GetDesktopEnvironment() {
   std::unique_ptr<base::Environment> env(base::Environment::Create());
   return base::nix::GetDesktopEnvironment(env.get());
 }
@@ -55,15 +49,15 @@ base::nix::DesktopEnvironment ChromeImporter::GetDesktopEnvironment() {
 
 using base::Time;
 
-ChromeImporter::ChromeImporter() {
+BraveImporter::BraveImporter() {
 }
 
-ChromeImporter::~ChromeImporter() {
+BraveImporter::~BraveImporter() {
 }
 
-void ChromeImporter::StartImport(const importer::SourceProfile& source_profile,
-                                  uint16_t items,
-                                  ImporterBridge* bridge) {
+void BraveImporter::StartImport(const importer::SourceProfile& source_profile,
+				uint16_t items,
+				ImporterBridge* bridge) {
   bridge_ = bridge;
   source_path_ = source_profile.source_path;
 
@@ -97,7 +91,24 @@ void ChromeImporter::StartImport(const importer::SourceProfile& source_profile,
   bridge_->NotifyEnded();
 }
 
-void ChromeImporter::ImportHistory() {
+// Returns true if |url| has a valid scheme that we allow to import. We
+// filter out the URL with a unsupported scheme.
+bool CanImportURL(const GURL& url) {
+  // The URL is not valid.
+  if (!url.is_valid())
+    return false;
+
+  // Filter out the URLs with unsupported schemes.
+  const char* const kInvalidSchemes[] = {"chrome-extension"};
+  for (size_t i = 0; i < arraysize(kInvalidSchemes); ++i) {
+    if (url.SchemeIs(kInvalidSchemes[i]))
+      return false;
+  }
+
+  return true;
+}
+
+void BraveImporter::ImportHistory() {
   base::FilePath history_path =
     source_path_.Append(
       base::FilePath::StringType(FILE_PATH_LITERAL("History")));
@@ -118,6 +129,10 @@ void ChromeImporter::ImportHistory() {
   while (s.Step() && !cancelled()) {
     GURL url(s.ColumnString(0));
 
+    // Filter out unwanted URLs.
+    if (!CanImportURL(url))
+      continue;
+
     ImporterURLRow row(url);
     row.title = s.ColumnString16(1);
     row.last_visit =
@@ -130,179 +145,156 @@ void ChromeImporter::ImportHistory() {
   }
 
   if (!rows.empty() && !cancelled())
-    bridge_->SetHistoryItems(rows, importer::VISIT_SOURCE_CHROME_IMPORTED);
+    bridge_->SetHistoryItems(rows, importer::VISIT_SOURCE_BRAVE_IMPORTED);
 }
 
-void ChromeImporter::ImportBookmarks() {
-  std::string bookmarks_content;
-  base::FilePath bookmarks_path =
+void BraveImporter::ParseBookmarks(
+    std::vector<ImportedBookmarkEntry>* bookmarks) {
+  base::FilePath session_store_path =
     source_path_.Append(
-      base::FilePath::StringType(FILE_PATH_LITERAL("Bookmarks")));
-  base::ReadFileToString(bookmarks_path, &bookmarks_content);
-  std::unique_ptr<base::Value> bookmarks_json =
-    base::JSONReader::Read(bookmarks_content);
-  const base::DictionaryValue* bookmark_dict;
-  if (!bookmarks_json || !bookmarks_json->GetAsDictionary(&bookmark_dict))
+      base::FilePath::StringType(FILE_PATH_LITERAL("session-store-1")));
+  std::string session_store_content;
+  if (!ReadFileToString(session_store_path, &session_store_content)) {
+    LOG(ERROR) << "Reading Brave session store file failed";
     return;
-  std::vector<ImportedBookmarkEntry> bookmarks;
-  const base::DictionaryValue* roots;
-  const base::DictionaryValue* bookmark_bar;
-  const base::DictionaryValue* other;
-  if (bookmark_dict->GetDictionary("roots", &roots)) {
-    // Importing bookmark bar items
-    if (roots->GetDictionary("bookmark_bar", &bookmark_bar)) {
-      std::vector<base::string16> path;
-      base::string16 name;
-      bookmark_bar->GetString("name", &name);
+  }
 
-      path.push_back(name);
-      RecursiveReadBookmarksFolder(bookmark_bar, path, true, &bookmarks);
-    }
-    // Importing other items
-    if (roots->GetDictionary("other", &other)) {
-      std::vector<base::string16> path;
-      base::string16 name;
-      other->GetString("name", &name);
+  std::unique_ptr<base::Value> session_store_json =
+    base::JSONReader::Read(session_store_content);
+  if (!session_store_json) {
+    LOG(ERROR) << "Parsing Brave session store JSON failed";
+    return;
+  }
 
-      path.push_back(name);
-      RecursiveReadBookmarksFolder(other, path, false, &bookmarks);
+  base::Value* bookmark_folders_dict =
+    session_store_json->FindKeyOfType("bookmarkFolders",
+                                      base::Value::Type::DICTIONARY);
+  base::Value* bookmarks_dict =
+    session_store_json->FindKeyOfType("bookmarks",
+                                      base::Value::Type::DICTIONARY);
+  base::Value* bookmark_order_dict =
+    session_store_json->FindPathOfType({"cache", "bookmarkOrder"},
+				       base::Value::Type::DICTIONARY);
+  if (!(bookmark_folders_dict && bookmarks_dict && bookmark_order_dict))
+    return;
+
+  // Recursively load bookmarks from each of the top-level bookmarks
+  // folders: "Bookmarks Toolbar" and "Other Bookmarks"
+  std::vector<base::string16> path;
+  RecursiveReadBookmarksFolder(base::UTF8ToUTF16("Bookmarks Toolbar"),
+                               "0",
+                               path,
+                               true,
+                               bookmark_folders_dict,
+                               bookmarks_dict,
+                               bookmark_order_dict,
+                               bookmarks);
+
+  path.clear();
+  RecursiveReadBookmarksFolder(base::UTF8ToUTF16("Other Bookmarks"),
+                               "-1",
+                               path,
+                               false,
+                               bookmark_folders_dict,
+                               bookmarks_dict,
+                               bookmark_order_dict,
+                               bookmarks);
+}
+
+void BraveImporter::RecursiveReadBookmarksFolder(
+  const base::string16 name,
+  const std::string key,
+  std::vector<base::string16>& parent_path,
+  const bool in_toolbar,
+  base::Value* bookmark_folders_dict,
+  base::Value* bookmarks_dict,
+  base::Value* bookmark_order_dict,
+  std::vector<ImportedBookmarkEntry>* bookmarks) {
+  // Add the name of the current folder to the path
+  std::vector<base::string16> path = parent_path;
+  path.push_back(name);
+
+  base::Value* bookmark_order =
+    bookmark_order_dict->FindKeyOfType(key, base::Value::Type::LIST);
+  if (!bookmark_order) {
+    LOG(ERROR) << "bookmarkOrder missing expected key: " << key;
+  }
+
+  for (const auto& entry : bookmark_order->GetList()) {
+    auto& type = entry.FindKeyOfType("type", base::Value::Type::STRING)->GetString();
+    auto& key = entry.FindKeyOfType("key", base::Value::Type::STRING)->GetString();
+
+     if (type == "bookmark-folder") {
+      base::Value* bookmark_folder =
+        bookmark_folders_dict->FindKeyOfType(key, base::Value::Type::DICTIONARY);
+      auto& title =
+        bookmark_folder->FindKeyOfType("title", base::Value::Type::STRING)->GetString();
+
+      // Empty folders don't have a corresponding entry in bookmark_order_dict,
+      // which provides an easy way to test whether a folder is empty.
+      base::Value* bookmark_order_entry =
+        bookmark_order_dict->FindKeyOfType(key, base::Value::Type::LIST);
+
+      if (bookmark_order_entry) {
+        // Recurse into non-empty folder.
+        RecursiveReadBookmarksFolder(base::UTF8ToUTF16(title),
+                                     key,
+                                     path,
+                                     in_toolbar,
+                                     bookmark_folders_dict,
+                                     bookmarks_dict,
+                                     bookmark_order_dict,
+                                     bookmarks);
+      } else {
+        // Add ImportedBookmarkEntry for empty folder.
+         ImportedBookmarkEntry imported_bookmark_folder;
+        imported_bookmark_folder.is_folder = true;
+        imported_bookmark_folder.in_toolbar = in_toolbar;
+        imported_bookmark_folder.url = GURL();
+        imported_bookmark_folder.path = path;
+        imported_bookmark_folder.title = base::UTF8ToUTF16(title);
+        // Brave doesn't specify a creation time for the folder.
+        imported_bookmark_folder.creation_time = base::Time::Now();
+        bookmarks->push_back(imported_bookmark_folder);
+      }
+    } else if (type == "bookmark") {
+      base::Value* bookmark =
+        bookmarks_dict->FindKeyOfType(key, base::Value::Type::DICTIONARY);
+      auto& title =
+        bookmark->FindKeyOfType("title", base::Value::Type::STRING)->GetString();
+      auto& location =
+        bookmark->FindKeyOfType("location", base::Value::Type::STRING)->GetString();
+
+      ImportedBookmarkEntry imported_bookmark;
+      imported_bookmark.is_folder = false;
+      imported_bookmark.in_toolbar = in_toolbar;
+      imported_bookmark.url = GURL(location);
+      imported_bookmark.path = path;
+      imported_bookmark.title = base::UTF8ToUTF16(title);
+      // Brave doesn't specify a creation time for the bookmark.
+      imported_bookmark.creation_time = base::Time::Now();
+      bookmarks->push_back(imported_bookmark);
     }
   }
-  // Write into profile.
+}
+
+void BraveImporter::ImportBookmarks() {
+  std::vector<ImportedBookmarkEntry> bookmarks;
+  ParseBookmarks(&bookmarks);
+
   if (!bookmarks.empty() && !cancelled()) {
+    // TODO l10n first folder name, e.g. https://cs.chromium.org/chromium/src/chrome/utility/importer/safari_importer.mm?l=87-88&rcl=7efa9dab6ac308eacd9fd5fbb76afd493fdbc3b4
     const base::string16& first_folder_name =
-      base::UTF8ToUTF16("Imported from Chrome");
+      base::UTF8ToUTF16("Imported from Brave");
     bridge_->AddBookmarks(bookmarks, first_folder_name);
   }
-
-  // Import favicons.
-  base::FilePath favicons_path =
-    source_path_.Append(
-      base::FilePath::StringType(FILE_PATH_LITERAL("Favicons")));
-  if (!base::PathExists(favicons_path))
-    return;
-
-  sql::Connection db;
-  if (!db.Open(favicons_path))
-    return;
-
-  FaviconMap favicon_map;
-  ImportFaviconURLs(&db, &favicon_map);
-  // Write favicons into profile.
-  if (!favicon_map.empty() && !cancelled()) {
-    favicon_base::FaviconUsageDataList favicons;
-    LoadFaviconData(&db, favicon_map, &favicons);
-    bridge_->SetFavicons(favicons);
-  }
 }
 
-void ChromeImporter::ImportFaviconURLs(
-  sql::Connection* db,
-  FaviconMap* favicon_map) {
-  const char query[] = "SELECT icon_id, page_url FROM icon_mapping;";
-  sql::Statement s(db->GetUniqueStatement(query));
-
-  while (s.Step() && !cancelled()) {
-    int64_t icon_id = s.ColumnInt64(0);
-    GURL url = GURL(s.ColumnString(1));
-    (*favicon_map)[icon_id].insert(url);
-  }
-}
-
-void ChromeImporter::LoadFaviconData(
-    sql::Connection* db,
-    const FaviconMap& favicon_map,
-    favicon_base::FaviconUsageDataList* favicons) {
-  const char query[] = "SELECT f.url, fb.image_data "
-                       "FROM favicons f "
-                       "JOIN favicon_bitmaps fb "
-                       "ON f.id = fb.icon_id "
-                       "WHERE f.id = ?;";
-  sql::Statement s(db->GetUniqueStatement(query));
-
-  if (!s.is_valid())
-    return;
-
-  for (FaviconMap::const_iterator i = favicon_map.begin();
-       i != favicon_map.end(); ++i) {
-    s.BindInt64(0, i->first);
-    if (s.Step()) {
-      favicon_base::FaviconUsageData usage;
-
-      usage.favicon_url = GURL(s.ColumnString(0));
-      if (!usage.favicon_url.is_valid())
-        continue;  // Don't bother importing favicons with invalid URLs.
-
-      std::vector<unsigned char> data;
-      s.ColumnBlobAsVector(1, &data);
-      if (data.empty())
-        continue;  // Data definitely invalid.
-
-      if (!importer::ReencodeFavicon(&data[0], data.size(), &usage.png_data))
-        continue;  // Unable to decode.
-
-      usage.urls = i->second;
-      favicons->push_back(usage);
-    }
-    s.Reset(true);
-  }
-}
-
-void ChromeImporter::RecursiveReadBookmarksFolder(
-  const base::DictionaryValue* folder,
-  const std::vector<base::string16>& parent_path,
-  bool is_in_toolbar,
-  std::vector<ImportedBookmarkEntry>* bookmarks) {
-  const base::ListValue* children;
-  if (folder->GetList("children", &children)) {
-    for (const auto& value : *children) {
-      const base::DictionaryValue* dict;
-      if (!value.GetAsDictionary(&dict))
-        continue;
-      std::string date_added, type, url;
-      base::string16 name;
-      dict->GetString("date_added", &date_added);
-      dict->GetString("name", &name);
-      dict->GetString("type", &type);
-      dict->GetString("url", &url);
-      ImportedBookmarkEntry entry;
-      if (type == "folder") {
-        // Folders are added implicitly on adding children, so we only
-        // explicitly add empty folders.
-        const base::ListValue* children;
-        if (dict->GetList("children", &children) && children->empty()) {
-          entry.in_toolbar = is_in_toolbar;
-          entry.is_folder = true;
-          entry.url = GURL();
-          entry.path = parent_path;
-          entry.title = name;
-          entry.creation_time =
-            base::Time::FromDoubleT(chromeTimeToDouble(std::stoll(date_added)));
-          bookmarks->push_back(entry);
-        }
-
-        std::vector<base::string16> path = parent_path;
-        path.push_back(name);
-        RecursiveReadBookmarksFolder(dict, path, is_in_toolbar, bookmarks);
-      } else if (type == "url") {
-        entry.in_toolbar = is_in_toolbar;
-        entry.is_folder = false;
-        entry.url = GURL(url);
-        entry.path = parent_path;
-        entry.title = name;
-        entry.creation_time =
-          base::Time::FromDoubleT(chromeTimeToDouble(std::stoll(date_added)));
-        bookmarks->push_back(entry);
-      }
-    }
-  }
-}
-
-double ChromeImporter::chromeTimeToDouble(int64_t time) {
+double BraveImporter::chromeTimeToDouble(int64_t time) {
   return ((time * 10 - 0x19DB1DED53E8000) / 10000) / 1000;
 }
 
-void ChromeImporter::ImportPasswords() {
+void BraveImporter::ImportPasswords() {
   #if !defined(USE_X11)
     base::FilePath passwords_path =
       source_path_.Append(
@@ -392,7 +384,7 @@ void ChromeImporter::ImportPasswords() {
   #endif
 }
 
-void ChromeImporter::ImportCookies() {
+void BraveImporter::ImportCookies() {
   base::FilePath cookies_path =
     source_path_.Append(
       base::FilePath::StringType(FILE_PATH_LITERAL("Cookies")));
@@ -418,7 +410,7 @@ void ChromeImporter::ImportCookies() {
     std::string value;
     if (!encrypted_value.empty() && delegate) {
 #if defined(OS_LINUX)
-      OSCrypt::SetConfig(std::make_unique<os_crypt::Config>());
+      OSCrypt::SetConfig(base::MakeUnique<os_crypt::Config>());
 #endif
       if (!delegate->DecryptString(encrypted_value, &value)) {
         continue;
@@ -437,7 +429,7 @@ void ChromeImporter::ImportCookies() {
         Time::FromInternalValue(s.ColumnInt64(10)),  // last_access_utc
         s.ColumnBool(7),                             // secure
         s.ColumnBool(8),                             // http_only
-        static_cast<net::CookieSameSite>(s.ColumnInt(9)),    // samesite
+        static_cast<net::CookieSameSite>(s.ColumnInt(9)),  // samesite
         static_cast<net::CookiePriority>(s.ColumnInt(13)));  // priority
     if (cookie.IsCanonical()) {
       cookies.push_back(cookie);
