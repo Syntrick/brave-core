@@ -217,9 +217,8 @@ void BraveImporter::RecursiveReadBookmarksFolder(
 
   base::Value* bookmark_order =
     bookmark_order_dict->FindKeyOfType(key, base::Value::Type::LIST);
-  if (!bookmark_order) {
-    LOG(ERROR) << "bookmarkOrder missing expected key: " << key;
-  }
+  if (!bookmark_order)
+    return;
 
   for (const auto& entry : bookmark_order->GetList()) {
     auto& type = entry.FindKeyOfType("type", base::Value::Type::STRING)->GetString();
