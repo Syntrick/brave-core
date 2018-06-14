@@ -13,6 +13,7 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "brave/grit/generated_resources.h"
 #include "chrome/common/importer/importer_bridge.h"
 #include "components/autofill/core/common/password_form.h"
 #include "components/cookie_config/cookie_store_util.h"
@@ -283,9 +284,8 @@ void BraveImporter::ImportBookmarks() {
   ParseBookmarks(&bookmarks);
 
   if (!bookmarks.empty() && !cancelled()) {
-    // TODO l10n first folder name, e.g. https://cs.chromium.org/chromium/src/chrome/utility/importer/safari_importer.mm?l=87-88&rcl=7efa9dab6ac308eacd9fd5fbb76afd493fdbc3b4
     const base::string16& first_folder_name =
-      base::UTF8ToUTF16("Imported from Brave");
+      bridge_->GetLocalizedString(IDS_IMPORT_FROM_BRAVE);
     bridge_->AddBookmarks(bookmarks, first_folder_name);
   }
 }
