@@ -12,6 +12,7 @@
 
 #include "base/files/file_path.h"
 #include "base/macros.h"
+#include "base/nix/xdg_util.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/common/importer/imported_bookmark_entry.h"
@@ -28,6 +29,8 @@ class BraveImporter : public Importer {
 
  private:
   ~BraveImporter() override;
+
+  static base::nix::DesktopEnvironment GetDesktopEnvironment();
 
   void ImportHistory();
   void ImportBookmarks();
