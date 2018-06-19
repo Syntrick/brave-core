@@ -11,13 +11,19 @@
 
 base::FilePath GetBraveUserDataFolder() {
   base::FilePath result;
-  if (!PathService::Get(base::DIR_HOME, &result))
+
+  base::FilePath home;
+  if (!PathService::Get(base::DIR_HOME, &home))
     return base::FilePath();
 
-  // TODO: On Ubuntu 16.04, when Brave is installed with Snap, session-store-1 is stored in
-  // ./snap/brave/23/.config/brave/session-store-1. Yuck!
-  result = result.Append(".config");
-  result = result.Append("brave");
+  // If Brave is installed via Snap, use the sandboxed home directory.
+  base::FilePath snap_user_data_dir =
+    home.Append("snap").Append("brave").Append("current");
+  if (base::DirectoryExists(snap_user_data_dir)) {
+    result = snap_user_data_dir;
+  } else {
+    result = home;
+  }
 
-  return result;
+  return result.Append(".config").Append("brave");
 }
