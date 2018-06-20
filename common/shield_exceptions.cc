@@ -54,6 +54,11 @@ bool IsWhitelistedReferrer(const GURL& firstPartyOrigin,
 
   // It's preferred to use specific_patterns below when possible
   static std::vector<URLPattern> whitelist_patterns({
+    // https://github.com/brave/browser-laptop/issues/5861
+    URLPattern(URLPattern::SCHEME_ALL, "https://cdn.embedly.com/*"),
+    URLPattern(URLPattern::SCHEME_ALL, "https://imgur.com/*"),
+    URLPattern(URLPattern::SCHEME_ALL, "https://www.redditmedia.com/*"),
+
     URLPattern(URLPattern::SCHEME_ALL, "https://use.typekit.net/*"),
     URLPattern(URLPattern::SCHEME_ALL, "https://cloud.typography.com/*"),
     URLPattern(URLPattern::SCHEME_ALL, "https://www.moremorewin.net/*")
